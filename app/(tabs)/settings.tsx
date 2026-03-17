@@ -14,7 +14,7 @@ import { LockScreen } from '../../components/feature/LockScreen';
 import { SeedPhraseGrid } from '../../components/feature/SeedPhraseGrid';
 import { Colors, Spacing, Radii } from '../../constants/theme';
 import { NETWORKS, NetworkId, USE_TESTNETS } from '../../constants/config';
-import { savePinataCredentials, isPinataConfiguredViaEnv } from '../../services/pinataService';
+import { savePinataCredentials, isPinataConfiguredViaEnv, getPinataCredentials } from '../../services/pinataService';
 import { autoFetchTokenMetadata, fetchTokenFromPinataCID, sourceLabelFor, FetchSource } from '../../services/tokenImportService';
 import {
   parseWCUri, savePendingRequest, loadSessions,
