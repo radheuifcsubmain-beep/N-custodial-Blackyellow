@@ -22,7 +22,22 @@ export interface AlchemyTransaction {
 }
 
 function getAlchemyUrl(networkId: NetworkId, isTestnet: boolean): string {
-  if (!ALCHEMY_KEY) return '';
+  if (!ALCHEMY_KEY) {
+    // Provide non-Alchemy public RPC as fallback for network-based data; does not support alchemy_getAssetTransfers.
+    if (networkId === 'ethereum') {
+      return isTestnet ? 'https://rpc.sepolia.org' : 'https://mainnet.infura.io/v3/';
+    }
+    if (networkId === 'bsc') {
+      return isTestnet ? 'https://data-seed-prebsc-1-s1.binance.org:8545' : 'https://bsc-dataseed.binance.org/';
+    }
+    if (networkId === 'polygon') {
+      return isTestnet ? 'https://rpc-amoy.polygon.technology' : 'https://polygon-rpc.com';
+    }
+    if (networkId === 'solana') {
+      return isTestnet ? 'https://api.devnet.solana.com' : 'https://api.mainnet-beta.solana.com';
+    }
+    return '';
+  }
   const k = ALCHEMY_KEY;
   if (networkId === 'ethereum') {
     return isTestnet
@@ -56,69 +71,115 @@ async function fetchEVMAlchemyTransactions(
   const rpcUrl = getAlchemyUrl(networkId, isTestnet);
   if (!rpcUrl) return [];
 
-  const categories = ['external', 'internal', 'erc20'];
+  const categoriesByNetwork: Record<string, string[]> = {
+    ethereum: ['external', 'internal', 'erc20', 'erc721', 'erc1155'],
+    polygon: ['external', 'internal', 'erc20', 'erc721', 'erc1155'],
+    bsc: ['external', 'erc20', 'erc721', 'erc1155'],
+  };
+  const categories = categoriesByNetwork[networkId] ?? ['external', 'erc20', 'erc721', 'erc1155'];
 
-  const [outgoing, incoming] = await Promise.allSettled([
-    fetch(rpcUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: 1,
-        jsonrpc: '2.0',
-        method: 'alchemy_getAssetTransfers',
-        params: [{
-          fromBlock: '0x0',
-          fromAddress: address,
-          category: categories,
-          withMetadata: true,
-          excludeZeroValue: true,
-          maxCount: `0x${limit.toString(16)}`,
-          order: 'desc',
-        }],
+  let rawTxs: any[] = [];
+
+  try {
+    const [outgoing, incoming] = await Promise.allSettled([
+      fetch(rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: 1,
+          jsonrpc: '2.0',
+          method: 'alchemy_getAssetTransfers',
+          params: [{
+            fromBlock: '0x0',
+            fromAddress: address,
+            category: categories,
+            withMetadata: true,
+            excludeZeroValue: true,
+            maxCount: `0x${limit.toString(16)}`,
+            order: 'desc',
+          }],
+        }),
+      }).then(async (r) => {
+        const json = await r.json();
+        if (json.error) {
+          console.log('[AlchemyService] outgoing error', json.error);
+          return { result: { transfers: [] } };
+        }
+        return json;
+      }).catch((err) => {
+        console.log('[AlchemyService] outgoing request failed', err);
+        return { result: { transfers: [] } };
       }),
-    }).then(r => r.json()),
-    fetch(rpcUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: 2,
-        jsonrpc: '2.0',
-        method: 'alchemy_getAssetTransfers',
-        params: [{
-          fromBlock: '0x0',
-          toAddress: address,
-          category: categories,
-          withMetadata: true,
-          excludeZeroValue: true,
-          maxCount: `0x${limit.toString(16)}`,
-          order: 'desc',
-        }],
+      fetch(rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: 2,
+          jsonrpc: '2.0',
+          method: 'alchemy_getAssetTransfers',
+          params: [{
+            fromBlock: '0x0',
+            toAddress: address,
+            category: categories,
+            withMetadata: true,
+            excludeZeroValue: true,
+            maxCount: `0x${limit.toString(16)}`,
+            order: 'desc',
+          }],
+        }),
+      }).then(async (r) => {
+        const json = await r.json();
+        if (json.error) {
+          console.log('[AlchemyService] incoming error', json.error);
+          return { result: { transfers: [] } };
+        }
+        return json;
+      }).catch((err) => {
+        console.log('[AlchemyService] incoming request failed', err);
+        return { result: { transfers: [] } };
       }),
-    }).then(r => r.json()),
-  ]);
+    ]);
 
-  const rawTxs: any[] = [];
-
-  if (outgoing.status === 'fulfilled') {
-    const transfers = outgoing.value?.result?.transfers ?? [];
-    for (const t of transfers) rawTxs.push({ ...t, _dir: 'send' });
-  }
-  if (incoming.status === 'fulfilled') {
-    const transfers = incoming.value?.result?.transfers ?? [];
-    for (const t of transfers) rawTxs.push({ ...t, _dir: 'receive' });
+    if (outgoing.status === 'fulfilled') {
+      const transfers = outgoing.value?.result?.transfers ?? [];
+      for (const t of transfers) rawTxs.push({ ...t, _dir: 'send' });
+    }
+    if (incoming.status === 'fulfilled') {
+      const transfers = incoming.value?.result?.transfers ?? [];
+      for (const t of transfers) rawTxs.push({ ...t, _dir: 'receive' });
+    }
+  } catch (err) {
+    console.log('[AlchemyService] fetchEVMAlchemyTransactions error:', err);
   }
 
   const seen = new Set<string>();
   const txs: AlchemyTransaction[] = [];
 
   for (const t of rawTxs) {
-    const dedupeKey = `${t.hash}_${t._dir}`;
+    const dedupeKey = `${t.hash}_${t._dir}_${t.from}_${t.to}_${t.asset}_${t.value}`;
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
 
     const isToken = t.category === 'erc20' || t.category === 'erc721' || t.category === 'erc1155';
-    const rawValue = t.value ?? 0;
-    const value = typeof rawValue === 'number' ? rawValue.toFixed(6) : String(rawValue);
+    let value = '0.000000';
+    if (isToken && t.rawContract?.value && t.rawContract?.decimal) {
+      const raw = BigInt(t.rawContract.value.toString?.() ?? t.rawContract.value);
+      const decimals = Number(t.rawContract.decimal);
+      if (!Number.isNaN(decimals) && decimals >= 0) {
+        const scaled = Number(raw) / 10 ** decimals;
+        value = scaled.toFixed(6);
+      } else {
+        value = String(t.value ?? '0');
+      }
+    } else if (t.value != null) {
+      const rawValue = Number(t.value);
+      if (!Number.isNaN(rawValue)) {
+        value = rawValue.toFixed(6);
+      } else {
+        value = String(t.value);
+      }
+    }
+
     const blockNum = t.blockNum ? parseInt(t.blockNum, 16).toString() : undefined;
     const timestamp = t.metadata?.blockTimestamp
       ? new Date(t.metadata.blockTimestamp).getTime()
@@ -132,7 +193,7 @@ async function fetchEVMAlchemyTransactions(
       symbol: t.asset ?? (isToken ? 'TOKEN' : networkId === 'bsc' ? 'BNB' : networkId === 'polygon' ? 'POL' : 'ETH'),
       timestamp,
       status: 'confirmed',
-      type: t._dir as 'send' | 'receive',
+      type: t._dir === 'send' || t._dir === 'receive' ? t._dir : 'receive',
       network: networkId,
       tokenName: isToken ? t.asset : undefined,
       tokenSymbol: isToken ? t.asset : undefined,
@@ -234,20 +295,174 @@ async function fetchSolanaAlchemyTransactions(
   }
 }
 
+const BSCSCAN_KEY = process.env.EXPO_PUBLIC_BSCSCAN_API_KEY ?? '';
+const ETHERSCAN_KEY = process.env.EXPO_PUBLIC_ETHERSCAN_API_KEY ?? '';
+const POLYGONSCAN_KEY = process.env.EXPO_PUBLIC_POLYGONSCAN_API_KEY ?? '';
+
+async function fetchEtherscanTransactions(
+  address: string,
+  isTestnet: boolean,
+  limit = 25
+): Promise<AlchemyTransaction[]> {
+  const baseUrl = isTestnet
+    ? 'https://api-sepolia.etherscan.io/api'
+    : 'https://api.etherscan.io/api';
+  if (!ETHERSCAN_KEY) {
+    console.log('[AlchemyService] Etherscan API key missing; using generic YourApiKeyToken fallback');
+  }
+
+  try {
+    const params = new URLSearchParams({
+      module: 'account',
+      action: 'txlist',
+      address,
+      startblock: '0',
+      endblock: '99999999',
+      page: '1',
+      offset: String(limit),
+      sort: 'desc',
+      apikey: ETHERSCAN_KEY || 'YourApiKeyToken',
+    });
+    const res = await fetch(`${baseUrl}?${params.toString()}`);
+    const data = await res.json();
+    if (!data || data.status !== '1' || !Array.isArray(data.result)) return [];
+    return data.result.slice(0, limit).map((tx: any) => {
+      const value = Number(tx.value || '0') / 1e18;
+      const fromLower = String(tx.from || '').toLowerCase();
+      const isSend = fromLower === address.toLowerCase();
+      return {
+        hash: String(tx.hash || ''),
+        from: String(tx.from || ''),
+        to: String(tx.to || ''),
+        value: value.toFixed(6),
+        symbol: 'ETH',
+        timestamp: Number(tx.timeStamp || 0) * 1000,
+        status: tx.txreceipt_status === '1' || tx.isError === '0' ? 'confirmed' : 'failed',
+        type: isSend ? 'send' : 'receive',
+        network: 'ethereum' as NetworkId,
+        blockNumber: String(tx.blockNumber || ''),
+        asset: 'ETH',
+      };
+    });
+  } catch (err) {
+    console.log('[AlchemyService] Etherscan error:', err);
+    return [];
+  }
+}
+
+async function fetchBscScanTransactions(
+  address: string,
+  isTestnet: boolean,
+  limit = 25
+): Promise<AlchemyTransaction[]> {
+  if (!BSCSCAN_KEY) return [];
+  const baseUrl = isTestnet
+    ? 'https://api-testnet.bscscan.com/api'
+    : 'https://api.bscscan.com/api';
+
+  try {
+    const params = new URLSearchParams({
+      module: 'account',
+      action: 'txlist',
+      address,
+      startblock: '0',
+      endblock: '99999999',
+      page: '1',
+      offset: String(limit),
+      sort: 'desc',
+      apikey: BSCSCAN_KEY,
+    });
+    const res = await fetch(`${baseUrl}?${params.toString()}`);
+    const data = await res.json();
+    if (!data) return [];
+    if (typeof data.message === 'string' && data.message.toLowerCase().includes('deprecated')) {
+      console.log('[AlchemyService] BscScan endpoint deprecated; skip fallback.');
+      return [];
+    }
+    if (data.status !== '1' || !Array.isArray(data.result)) return [];
+
+    return data.result.slice(0, limit).map((tx: any) => {
+      const value = Number(tx.value || '0') / 1e18;
+      const lowercaseAddress = address.toLowerCase();
+      const from = String(tx.from || '').toLowerCase();
+      const to = String(tx.to || '').toLowerCase();
+      const isSend = from === lowercaseAddress;
+      return {
+        hash: String(tx.hash || ''),
+        from: String(tx.from || ''),
+        to: String(tx.to || ''),
+        value: value.toFixed(6),
+        symbol: 'BNB',
+        timestamp: Number(tx.timeStamp || 0) * 1000,
+        status: tx.isError === '0' ? 'confirmed' : 'failed',
+        type: isSend ? 'send' : 'receive',
+        network: 'bsc' as NetworkId,
+        blockNumber: String(tx.blockNumber || ''),
+        asset: 'BNB',
+      };
+    });
+  } catch (err) {
+    console.log('[AlchemyService] BscScan error:', err);
+    return [];
+  }
+}
+
 export async function fetchAlchemyTransactions(
   address: string,
   networkId: NetworkId,
   isTestnet: boolean,
   limit = 25
 ): Promise<AlchemyTransaction[]> {
-  if (!address || !ALCHEMY_KEY) return [];
+  if (!address) return [];
+  console.log(`[AlchemyService] fetchAlchemyTransactions ${networkId} ${isTestnet ? 'testnet' : 'mainnet'} address=${address}`);
+
   try {
     if (networkId === 'solana') {
-      return fetchSolanaAlchemyTransactions(address, isTestnet, limit);
+      const solTxs = await fetchSolanaAlchemyTransactions(address, isTestnet, limit);
+      console.log(`[AlchemyService] Got ${solTxs.length} Solana txs`);
+      return solTxs;
     }
-    return fetchEVMAlchemyTransactions(address, networkId as Exclude<NetworkId, 'solana'>, isTestnet, limit);
+
+    if (networkId === 'bsc' && !ALCHEMY_KEY) {
+      const bscTxs = await fetchBscScanTransactions(address, isTestnet, limit);
+      console.log(`[AlchemyService] fallback BscScan ${bscTxs.length} txs for ${address}`);
+      return bscTxs;
+    }
+
+    if (networkId === 'ethereum' && !ALCHEMY_KEY) {
+      const ethTxs = await fetchEtherscanTransactions(address, isTestnet, limit);
+      console.log(`[AlchemyService] fallback Etherscan ${ethTxs.length} txs for ${address}`);
+      return ethTxs;
+    }
+
+    const evmTxs = await fetchEVMAlchemyTransactions(address, networkId as Exclude<NetworkId, 'solana'>, isTestnet, limit);
+    console.log(`[AlchemyService] Got ${evmTxs.length} txs from Alchemy for ${address} on ${networkId}`);
+    if (evmTxs.length > 0) return evmTxs;
+
+    if (networkId === 'bsc') {
+      const bscTxs = await fetchBscScanTransactions(address, isTestnet, limit);
+      console.log(`[AlchemyService] Got ${bscTxs.length} txs from BscScan fallback for ${address}`);
+      return bscTxs;
+    }
+    if (networkId === 'ethereum') {
+      const ethTxs = await fetchEtherscanTransactions(address, isTestnet, limit);
+      console.log(`[AlchemyService] Got ${ethTxs.length} txs from Etherscan fallback for ${address}`);
+      return ethTxs;
+    }
+
+    return [];
   } catch (err) {
     console.log('[AlchemyService] Error:', err);
+    if (networkId === 'bsc') {
+      const bscTxs = await fetchBscScanTransactions(address, isTestnet, limit);
+      console.log(`[AlchemyService] Got ${bscTxs.length} txs from BscScan after error for ${address}`);
+      return bscTxs;
+    }
+    if (networkId === 'ethereum') {
+      const ethTxs = await fetchEtherscanTransactions(address, isTestnet, limit);
+      console.log(`[AlchemyService] Got ${ethTxs.length} txs from Etherscan after error for ${address}`);
+      return ethTxs;
+    }
     return [];
   }
 }

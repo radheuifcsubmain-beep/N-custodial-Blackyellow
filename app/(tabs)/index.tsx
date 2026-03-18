@@ -143,7 +143,7 @@ export default function PortfolioScreen() {
           </Pressable>
 
           <Pressable
-            onPress={() => router.push('/(tabs)/settings')}
+            onPress={() => router.push('/(tabs)/import-token')}
             style={({ pressed }) => [styles.actionBtn, pressed && styles.pressed]}
           >
             <View style={[styles.actionIcon, { backgroundColor: Colors.primary + '22' }]}>

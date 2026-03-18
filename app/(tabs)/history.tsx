@@ -13,7 +13,6 @@ import { GlassCard } from '../../components/ui/GlassCard';
 import { Colors, Spacing, Radii } from '../../constants/theme';
 import { getNetworks, NetworkId } from '../../constants/config';
 import { fetchAlchemyTransactions, AlchemyTransaction } from '../../services/alchemyService';
-import { getMockTransactions } from '../../services/blockchainService';
 
 type AnyTransaction = AlchemyTransaction;
 
@@ -105,41 +104,50 @@ export default function HistoryScreen() {
   const { selectedNetwork, getCurrentAddress, isLocked, refreshBalances, isTestnet } = useWallet();
   const [transactions, setTransactions] = useState<AnyTransaction[]>([]);
   const [loading, setLoading] = useState(false);
-  const [usingMock, setUsingMock] = useState(false);
+  const [fetchError, setFetchError] = useState('');
   const [selectedTx, setSelectedTx] = useState<AnyTransaction | null>(null);
   const fetchedForRef = useRef<string>('');
 
   const activeNetworks = getNetworks(isTestnet);
 
-  const loadTransactions = useCallback(async () => {
+  const loadTransactions = useCallback(async (force = false) => {
     const address = getCurrentAddress();
     const key = `${address}_${selectedNetwork}_${isTestnet ? 'test' : 'main'}`;
-    if (!address || fetchedForRef.current === key) return;
+    console.log('[History] loadTransactions', { force, selectedNetwork, isTestnet, address, key, last: fetchedForRef.current });
+    if (!address) {
+      setFetchError('No wallet address available. Please unlock wallet and refresh.');
+      setTransactions([]);
+      setLoading(false);
+      return;
+    }
+    if (!force && fetchedForRef.current === key) {
+      console.log('[History] skipping fetch; key unchanged');
+      return;
+    }
     fetchedForRef.current = key;
 
     setLoading(true);
     try {
+      setFetchError('');
       const txs = await fetchAlchemyTransactions(address, selectedNetwork, isTestnet, 30);
+      console.log('[History] fetched txs', txs.length);
+      setTransactions(txs);
       if (txs.length === 0) {
-        const mocks = getMockTransactions(address, selectedNetwork);
-        setTransactions(mocks as AnyTransaction[]);
-        setUsingMock(true);
-      } else {
-        setTransactions(txs);
-        setUsingMock(false);
+        setFetchError(`No transactions found for ${address} on ${selectedNetwork} (${isTestnet ? 'testnet' : 'mainnet'}).`);
       }
-    } catch {
-      const mocks = getMockTransactions(address, selectedNetwork);
-      setTransactions(mocks as AnyTransaction[]);
-      setUsingMock(true);
+    } catch (error: any) {
+      console.warn('[History] Failed to fetch Alchemy transactions', error);
+      setFetchError(`Failed to fetch from provider: ${error?.message ?? 'unknown error'}.`);
+      setTransactions([]);
     } finally {
       setLoading(false);
     }
   }, [selectedNetwork, getCurrentAddress, isTestnet]);
 
   const handleRefresh = useCallback(async () => {
+    console.log('[History] refresh tapped');
     fetchedForRef.current = '';
-    await loadTransactions();
+    await loadTransactions(true);
   }, [loadTransactions]);
 
   useEffect(() => {
@@ -172,7 +180,12 @@ export default function HistoryScreen() {
           <Text style={styles.headerSub}>
             {currentNetwork?.name ?? selectedNetwork}
             {isTestnet && <Text style={styles.testnetLabel}> · Testnet</Text>}
-            {usingMock && <Text style={styles.mockLabel}> · Demo data</Text>}
+          </Text>
+          <Text style={styles.headerSub}>
+            Address: {getCurrentAddress() ? `${getCurrentAddress().slice(0, 8)}...${getCurrentAddress().slice(-6)}` : 'No address'}
+          </Text>
+          <Text style={styles.headerSub}>
+            Debug: {selectedNetwork} / {isTestnet ? 'test' : 'main'}
           </Text>
         </View>
         <Pressable
@@ -204,6 +217,7 @@ export default function HistoryScreen() {
           <Text style={styles.emptySubtitle}>
             Your {currentNetwork?.name ?? selectedNetwork} transactions will appear here.
           </Text>
+          {fetchError ? <Text style={styles.errorText}>{fetchError}</Text> : null}
           <Pressable onPress={handleRefresh} style={styles.retryBtn}>
             <MaterialIcons name="refresh" size={16} color={Colors.primary} />
             <Text style={styles.retryBtnText}>Refresh</Text>
@@ -229,17 +243,9 @@ export default function HistoryScreen() {
               <Text style={styles.listHeader}>
                 {transactions.length} Transaction{transactions.length !== 1 ? 's' : ''}
               </Text>
-              {usingMock && (
-                <View style={styles.demoChip}>
-                  <MaterialIcons name="info-outline" size={11} color={Colors.warning} />
-                  <Text style={styles.demoChipText}>Demo</Text>
-                </View>
-              )}
-              {!usingMock && (
-                <View style={styles.alchemyChip}>
-                  <Text style={styles.alchemyChipText}>Alchemy</Text>
-                </View>
-              )}
+              <View style={styles.alchemyChip}>
+                <Text style={styles.alchemyChipText}>Alchemy</Text>
+              </View>
             </View>
           }
         />
@@ -322,7 +328,7 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 22, fontWeight: '700', color: Colors.textPrimary },
   headerSub: { fontSize: 12, color: Colors.textMuted, marginTop: 2 },
   testnetLabel: { color: Colors.warning, fontSize: 11 },
-  mockLabel: { color: Colors.warning, fontSize: 11 },
+
   refreshBtn: {
     width: 40, height: 40, borderRadius: Radii.full,
     backgroundColor: Colors.surfaceElevated, alignItems: 'center', justifyContent: 'center',
@@ -330,6 +336,7 @@ const styles = StyleSheet.create({
   },
   loadingState: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: Spacing.md },
   loadingText: { fontSize: 14, color: Colors.textMuted },
+  errorText: { fontSize: 13, color: Colors.error, textAlign: 'center', marginTop: 4, marginBottom: 4 },
   emptyState: {
     flex: 1, alignItems: 'center', justifyContent: 'center',
     gap: Spacing.md, paddingHorizontal: Spacing.xl,
@@ -351,13 +358,7 @@ const styles = StyleSheet.create({
   listContent: { padding: Spacing.md, paddingTop: 4 },
   listHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: Spacing.sm },
   listHeader: { fontSize: 13, color: Colors.textMuted },
-  demoChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 3,
-    paddingHorizontal: 7, paddingVertical: 2,
-    backgroundColor: Colors.warning + '20', borderRadius: Radii.full,
-    borderWidth: 1, borderColor: Colors.warning + '40',
-  },
-  demoChipText: { fontSize: 10, color: Colors.warning, fontWeight: '600' },
+
   alchemyChip: {
     paddingHorizontal: 7, paddingVertical: 2,
     backgroundColor: Colors.primary + '20', borderRadius: Radii.full,
