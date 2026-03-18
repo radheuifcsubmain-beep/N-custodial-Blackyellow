@@ -196,7 +196,7 @@ export default function SettingsScreen() {
     mnemonic, addresses, removeWallet, selectedNetwork,
     biometricEnabled, biometricAvailable, enableBiometric, disableBiometric,
     lockWallet, isLocked, customTokens, importCustomToken, deleteCustomToken,
-    refreshCustomTokens, getCurrentAddress, refreshBalances,
+    refreshCustomTokens, getCurrentAddress, refreshBalances, isTestnet,
   } = useWallet();
 
   // Modal toggles
@@ -306,7 +306,8 @@ export default function SettingsScreen() {
     setTokenImporting(true); setTokenImportError(''); setTokenImportSuccess(''); setImportSource(null);
     try {
       // Auto-fetch: Supabase → Etherscan API → Blockchain RPC
-      const result = await autoFetchTokenMetadata(addr, tokenNetwork);
+      // Pass isTestnet so the correct RPC/explorer endpoints are used
+      const result = await autoFetchTokenMetadata(addr, tokenNetwork, isTestnet);
       await importCustomToken(result.metadata);
       setImportSource(result.source);
       setTokenImportSuccess(`✓ ${result.metadata.name} (${result.metadata.symbol}) imported via ${sourceLabelFor(result.source)}!`);
@@ -314,7 +315,7 @@ export default function SettingsScreen() {
     } catch (e: any) {
       setTokenImportError(e?.message ?? 'Could not fetch token metadata. Check the address and network.');
     } finally { setTokenImporting(false); }
-  }, [contractAddress, tokenNetwork, importCustomToken]);
+  }, [contractAddress, tokenNetwork, importCustomToken, isTestnet]);
 
   // ─── WalletConnect ───────────────────────────────────────────────────────────
 

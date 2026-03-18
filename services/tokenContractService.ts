@@ -60,10 +60,11 @@ async function ethCall(rpcUrl: string, to: string, data: string): Promise<string
 // Fetch ERC-20 token metadata from the blockchain
 export async function fetchTokenMetadataFromChain(
   contractAddress: string,
-  networkId: Exclude<NetworkId, 'solana'>
+  networkId: Exclude<NetworkId, 'solana'>,
+  rpcUrlOverride?: string
 ): Promise<TokenMetadata> {
   const network = NETWORKS[networkId];
-  const rpcUrl = network.rpcUrl;
+  const rpcUrl = rpcUrlOverride ?? network.rpcUrl;
 
   // Parallel RPC calls for all token fields
   const [nameHex, symbolHex, decimalsHex, supplyHex] = await Promise.all([

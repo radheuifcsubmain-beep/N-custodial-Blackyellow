@@ -1,6 +1,6 @@
-// XU Wallet — Auto-fetch token metadata pipeline
+// OnSpace Wallet — Auto-fetch token metadata pipeline
 // Priority: Supabase → Etherscan API → Pinata IPFS → RPC eth_call
-import { NETWORKS, NetworkId, EXPLORER_API_KEYS } from '../constants/config';
+import { NETWORKS, NetworkId, EXPLORER_API_KEYS, getNetworks } from '../constants/config';
 import { TokenMetadata } from './pinataService';
 import { fetchTokenMetadataFromChain } from './tokenContractService';
 
@@ -14,6 +14,14 @@ export type FetchSource = 'supabase' | 'pinata' | 'etherscan' | 'rpc';
 export interface TokenImportResult {
   metadata: TokenMetadata;
   source: FetchSource;
+}
+
+// Network config override — lets callers pass mainnet or testnet config
+export interface NetworkOverride {
+  rpcUrl: string;
+  explorerApiUrl: string;
+  chainId: number;
+  isTestnet: boolean;
 }
 
 export function sourceLabelFor(source: FetchSource): string {
@@ -53,7 +61,6 @@ async function fetchFromSupabase(
 
     const row = rows[0];
 
-    // If there's a Pinata CID, fetch richer metadata from IPFS
     if (row.pinata_cid) {
       const pinataResult = await fetchFromPinataCid(row.pinata_cid);
       if (pinataResult) return { metadata: pinataResult.metadata, source: 'supabase' };
@@ -61,6 +68,7 @@ async function fetchFromSupabase(
 
     if (!row.name || !row.symbol) return null;
 
+    const networks = getNetworks(false); // use mainnet chainId for reference
     return {
       source: 'supabase',
       metadata: {
@@ -69,7 +77,7 @@ async function fetchFromSupabase(
         decimals: Number(row.decimals ?? 18),
         contractAddress: String(row.contract_address ?? contractAddress),
         network: String(row.network ?? networkId),
-        chainId: row.chain_id ? Number(row.chain_id) : NETWORKS[networkId]?.chainId,
+        chainId: row.chain_id ? Number(row.chain_id) : (networks as any)[networkId]?.chainId,
         totalSupply: row.total_supply ? String(row.total_supply) : undefined,
         description: row.description ?? undefined,
         color: row.color ?? '#E8B800',
@@ -85,14 +93,16 @@ async function fetchFromSupabase(
   }
 }
 
-// ── Step 2: Etherscan token info API ─────────────────────────────────────────
+// ── Step 2: Etherscan / BSCscan / Polygonscan token info ─────────────────────
 
 async function fetchFromEtherscan(
   contractAddress: string,
-  networkId: Exclude<NetworkId, 'solana'>
+  networkId: Exclude<NetworkId, 'solana'>,
+  override?: NetworkOverride
 ): Promise<TokenImportResult | null> {
-  const network = NETWORKS[networkId];
-  if (!network.explorerApiUrl) return null;
+  const networkConfig = override ?? (NETWORKS as any)[networkId];
+  const explorerApiUrl = override?.explorerApiUrl ?? networkConfig?.explorerApiUrl;
+  if (!explorerApiUrl) return null;
 
   const apiKey = networkId === 'ethereum'
     ? EXPLORER_API_KEYS.etherscan
@@ -104,7 +114,7 @@ async function fetchFromEtherscan(
 
   try {
     const url =
-      `${network.explorerApiUrl}?module=token&action=tokeninfo` +
+      `${explorerApiUrl}?module=token&action=tokeninfo` +
       `&contractaddress=${contractAddress}&apikey=${apiKey}`;
 
     const res = await fetch(url, { headers: { Accept: 'application/json' } });
@@ -118,6 +128,8 @@ async function fetchFromEtherscan(
     const info = data.result[0];
     if (!info.tokenName || !info.symbol) return null;
 
+    const chainId = override?.chainId ?? (NETWORKS as any)[networkId]?.chainId;
+
     return {
       source: 'etherscan',
       metadata: {
@@ -127,9 +139,10 @@ async function fetchFromEtherscan(
         totalSupply: info.totalSupply ?? undefined,
         contractAddress,
         network: networkId,
-        chainId: network.chainId,
+        chainId,
         description: info.description ?? undefined,
         color: '#E8B800',
+        logoUrl: info.tokenPriceUSD ? undefined : undefined, // Etherscan doesn't return logo
         website: info.website ?? undefined,
         createdAt: new Date().toISOString(),
       },
@@ -182,36 +195,63 @@ export async function fetchFromPinataCid(cid: string): Promise<TokenImportResult
   }
 }
 
-// ── Step 4: Blockchain RPC (always works) ────────────────────────────────────
+// ── Step 4: Blockchain RPC (always works for valid contracts) ─────────────────
 
 async function fetchFromRPC(
   contractAddress: string,
-  networkId: Exclude<NetworkId, 'solana'>
+  networkId: Exclude<NetworkId, 'solana'>,
+  override?: NetworkOverride
 ): Promise<TokenImportResult> {
-  const metadata = await fetchTokenMetadataFromChain(contractAddress, networkId);
+  const rpcUrl = override?.rpcUrl;
+  const metadata = await fetchTokenMetadataFromChain(contractAddress, networkId, rpcUrl);
   return { metadata, source: 'rpc' };
 }
 
-// ── Main entry point ─────────────────────────────────────────────────────────
+// ── Main entry point ──────────────────────────────────────────────────────────
 
 /**
  * Auto-fetches token metadata using priority chain:
  * Supabase → Etherscan API → Pinata IPFS → RPC eth_call
+ *
+ * @param contractAddress  The ERC-20/BEP-20 contract address
+ * @param networkId        Which chain (ethereum | bsc | polygon)
+ * @param isTestnet        Optional — pass true/false to use testnet or mainnet endpoints.
+ *                         Defaults to whatever NETWORKS static config says.
  */
 export async function autoFetchTokenMetadata(
   contractAddress: string,
-  networkId: Exclude<NetworkId, 'solana'>
+  networkId: Exclude<NetworkId, 'solana'>,
+  isTestnet?: boolean
 ): Promise<TokenImportResult> {
   const addr = contractAddress.trim();
 
+  // Build a network override if isTestnet is explicitly given
+  let override: NetworkOverride | undefined;
+  if (isTestnet !== undefined) {
+    const nets = getNetworks(isTestnet);
+    const net = (nets as any)[networkId];
+    override = {
+      rpcUrl: net.rpcUrl,
+      explorerApiUrl: net.explorerApiUrl,
+      chainId: net.chainId,
+      isTestnet,
+    };
+  }
+
   const supabase = await fetchFromSupabase(addr, networkId);
-  if (supabase) { console.log('[XU] Token found in Supabase'); return supabase; }
+  if (supabase) {
+    console.log('[TokenImport] Found in Supabase');
+    return supabase;
+  }
 
-  const etherscan = await fetchFromEtherscan(addr, networkId);
-  if (etherscan) { console.log('[XU] Token found via Etherscan'); return etherscan; }
+  const etherscan = await fetchFromEtherscan(addr, networkId, override);
+  if (etherscan) {
+    console.log('[TokenImport] Found via Etherscan/BSCscan/Polygonscan');
+    return etherscan;
+  }
 
-  console.log('[XU] Falling back to blockchain RPC');
-  return fetchFromRPC(addr, networkId);
+  console.log('[TokenImport] Falling back to blockchain RPC');
+  return fetchFromRPC(addr, networkId, override);
 }
 
 /**
