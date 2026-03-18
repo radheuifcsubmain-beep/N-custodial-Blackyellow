@@ -35,28 +35,79 @@ export function sourceLabelFor(source: FetchSource): string {
 
 // ── Step 1: Supabase ─────────────────────────────────────────────────────────
 
+const IPFS_GATEWAY = 'https://gateway.pinata.cloud/ipfs/';
+
+function logoUrlFromCid(cid: string | null | undefined): string | undefined {
+  if (!cid) return undefined;
+  if (cid.startsWith('http')) return cid;
+  if (cid.startsWith('ipfs://')) return IPFS_GATEWAY + cid.slice(7);
+  return IPFS_GATEWAY + cid;
+}
+
 async function fetchFromSupabase(
   contractAddress: string,
   networkId: NetworkId
 ): Promise<TokenImportResult | null> {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+
+  const headers = {
+    apikey: SUPABASE_ANON_KEY,
+    Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+    Accept: 'application/json',
+  };
+
+  const addr = contractAddress.toLowerCase();
+
+  // ── Check "deployments" table (OnSpace token factory schema) ──────────────
   try {
-    const url =
+    const deplyUrl =
+      `${SUPABASE_URL}/rest/v1/deployments` +
+      `?contract_address=eq.${addr}&select=*&limit=1`;
+    const dr = await fetch(deplyUrl, { headers });
+    if (dr.ok) {
+      const rows = await dr.json();
+      if (Array.isArray(rows) && rows.length > 0) {
+        const row = rows[0];
+        const name = row.token_name ?? row.name;
+        const symbol = row.token_symbol ?? row.symbol;
+        if (name && symbol) {
+          console.log('[TokenImport] Found in Supabase deployments table');
+          const logoUrl = logoUrlFromCid(row.logo_cid ?? row.logo_url);
+          return {
+            source: 'supabase',
+            metadata: {
+              name: String(name),
+              symbol: String(symbol).toUpperCase(),
+              decimals: Number(row.decimals ?? 18),
+              contractAddress: String(row.contract_address ?? contractAddress),
+              network: networkId,
+              chainId: row.network_id ? Number(row.network_id) : undefined,
+              totalSupply: row.total_supply ? String(row.total_supply) : undefined,
+              description: row.description ?? undefined,
+              color: row.color ?? '#F3BA2F',
+              logoUrl,
+              creatorWallet: row.deployer_address ?? row.creator_wallet ?? undefined,
+              website: row.website ?? undefined,
+              createdAt: row.created_at ?? new Date().toISOString(),
+            },
+          };
+        }
+      }
+    }
+  } catch (err) {
+    console.log('[TokenImport] Supabase deployments lookup error:', err);
+  }
+
+  // ── Fallback: "tokens" table (legacy schema) ──────────────────────────────
+  try {
+    const tokUrl =
       `${SUPABASE_URL}/rest/v1/tokens` +
-      `?contract_address=eq.${contractAddress.toLowerCase()}` +
+      `?contract_address=eq.${addr}` +
       `&network=eq.${networkId}` +
       `&select=*&limit=1`;
-
-    const res = await fetch(url, {
-      headers: {
-        apikey: SUPABASE_ANON_KEY,
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-        Accept: 'application/json',
-      },
-    });
-
-    if (!res.ok) return null;
-    const rows = await res.json();
+    const tr = await fetch(tokUrl, { headers });
+    if (!tr.ok) return null;
+    const rows = await tr.json();
     if (!Array.isArray(rows) || rows.length === 0) return null;
 
     const row = rows[0];
@@ -68,7 +119,7 @@ async function fetchFromSupabase(
 
     if (!row.name || !row.symbol) return null;
 
-    const networks = getNetworks(false); // use mainnet chainId for reference
+    const networks = getNetworks(false);
     return {
       source: 'supabase',
       metadata: {
@@ -81,14 +132,14 @@ async function fetchFromSupabase(
         totalSupply: row.total_supply ? String(row.total_supply) : undefined,
         description: row.description ?? undefined,
         color: row.color ?? '#E8B800',
-        logoUrl: row.logo_url ?? undefined,
+        logoUrl: logoUrlFromCid(row.logo_url ?? row.logo_cid),
         creatorWallet: row.creator_wallet ?? undefined,
         website: row.website ?? undefined,
         createdAt: row.created_at ?? new Date().toISOString(),
       },
     };
   } catch (err) {
-    console.log('[TokenImport] Supabase lookup error:', err);
+    console.log('[TokenImport] Supabase tokens lookup error:', err);
     return null;
   }
 }
