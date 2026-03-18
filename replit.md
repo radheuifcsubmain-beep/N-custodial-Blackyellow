@@ -2,7 +2,7 @@
 
 ## Overview
 
-OnSpace Wallet is a non-custodial multi-chain cryptocurrency wallet built with React Native / Expo. It supports Ethereum, BSC, Polygon, and Solana networks, with PIN authentication, real blockchain transaction fetching, Pinata IPFS + contract-address token import, WalletConnect integration, and testnet/mainnet switching.
+OnSpace Wallet is a non-custodial multi-chain cryptocurrency wallet built with React Native / Expo. It supports Ethereum, BSC, Polygon, and Solana networks, with PIN authentication, Alchemy-powered transaction history, Pinata IPFS + contract-address token import, dynamic mainnet/testnet toggle, and portfolio showing all 4 chain tokens with IPFS logos.
 
 ## Tech Stack
 

@@ -1,13 +1,14 @@
 // Powered by OnSpace.AI
 import React, {
-  createContext, useState, useEffect, useRef, useCallback, ReactNode,
+  createContext, useState, useEffect, useRef, useCallback, ReactNode, useMemo,
 } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   generateMnemonicAsync, validateMnemonic, deriveAddresses,
   saveWallet, loadWallet, deleteWallet, sendEVMTransaction,
   TxResult, WalletAddresses,
 } from '../services/cryptoService';
-import { fetchAllBalances } from '../services/blockchainService';
+import { fetchAllBalancesForNetworks } from '../services/blockchainService';
 import { fetchTokenBalances, TokenBalance } from '../services/tokenService';
 import {
   isBiometricEnabled, setBiometricEnabled,
@@ -18,7 +19,7 @@ import {
   loadCustomTokens, addCustomToken, removeCustomToken, CustomToken,
 } from '../services/customTokenService';
 import { TokenMetadata } from '../services/pinataService';
-import { NETWORKS, NetworkId } from '../constants/config';
+import { NetworkId, getNetworks, STORAGE_KEYS, DEFAULT_USE_TESTNETS } from '../constants/config';
 
 export interface BalanceInfo {
   balance: string;
@@ -42,6 +43,8 @@ interface WalletContextType {
   biometricEnabled: boolean;
   biometricAvailable: boolean;
   pinEnabled: boolean;
+  isTestnet: boolean;
+  toggleNetworkMode: () => Promise<void>;
   createWallet: () => Promise<string>;
   importWallet: (mnemonic: string) => Promise<boolean>;
   confirmWalletCreation: (mnemonic: string) => Promise<void>;
@@ -78,16 +81,29 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [biometricEnabled, setBiometricEnabledState] = useState(false);
   const [biometricAvailable, setBiometricAvailableState] = useState(false);
   const [pinEnabled, setPinEnabled] = useState(false);
+  const [isTestnet, setIsTestnet] = useState(DEFAULT_USE_TESTNETS);
 
-  // Refs to avoid stale closures
   const addressesRef = useRef<WalletAddresses | null>(null);
   const selectedNetworkRef = useRef<NetworkId>('ethereum');
   const mnemonicRef = useRef<string | null>(null);
+  const isTestnetRef = useRef(DEFAULT_USE_TESTNETS);
 
-  // Keep refs in sync
   addressesRef.current = addresses;
   selectedNetworkRef.current = selectedNetwork;
   mnemonicRef.current = mnemonic;
+  isTestnetRef.current = isTestnet;
+
+  // Active networks based on current isTestnet flag
+  const activeNetworks = useMemo(() => getNetworks(isTestnet), [isTestnet]);
+
+  // ─── Network toggle ───────────────────────────────────────────────────────
+
+  const toggleNetworkMode = useCallback(async (): Promise<void> => {
+    const next = !isTestnetRef.current;
+    setIsTestnet(next);
+    isTestnetRef.current = next;
+    await AsyncStorage.setItem(STORAGE_KEYS.IS_TESTNET, next ? '1' : '0');
+  }, []);
 
   // ─── Callbacks ───────────────────────────────────────────────────────────
 
@@ -96,7 +112,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     if (!addr) return;
     setIsLoadingBalances(true);
     try {
-      const result = await fetchAllBalances(addr as Record<NetworkId, string>);
+      const networks = getNetworks(isTestnetRef.current);
+      const result = await fetchAllBalancesForNetworks(addr as Record<NetworkId, string>, networks);
       setBalances(result);
     } catch (e) {
       console.log('[Wallet] Balance fetch error:', e);
@@ -114,7 +131,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
     setIsLoadingTokens(true);
     try {
-      const net = NETWORKS[network];
+      const networks = getNetworks(isTestnetRef.current);
+      const net = (networks as any)[network];
       const tokens = await fetchTokenBalances(
         network as Exclude<NetworkId, 'solana'>,
         addr[network],
@@ -139,8 +157,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const createWallet = useCallback(async (): Promise<string> => {
-    const m = await generateMnemonicAsync();
-    return m;
+    return generateMnemonicAsync();
   }, []);
 
   const confirmWalletCreation = useCallback(async (newMnemonic: string): Promise<void> => {
@@ -204,7 +221,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     const network = selectedNetworkRef.current;
     if (!m) return { success: false, error: 'Wallet not loaded' };
     if (network === 'solana') return { success: false, error: 'Solana transactions not yet supported' };
-    const net = NETWORKS[network];
+    const networks = getNetworks(isTestnetRef.current);
+    const net = (networks as any)[network];
     return sendEVMTransaction({
       mnemonic: m,
       toAddress,
@@ -219,26 +237,16 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const unlockWithBiometrics = useCallback(async (): Promise<boolean> => {
     try {
       const result = await authenticateWithBiometrics();
-      if (result.success) {
-        setIsLocked(false);
-        return true;
-      }
-    } catch {
-      // ignore
-    }
+      if (result.success) { setIsLocked(false); return true; }
+    } catch { /* ignore */ }
     return false;
   }, []);
 
   const unlockWithPIN = useCallback(async (pin: string): Promise<boolean> => {
     try {
       const valid = await verifyPIN(pin);
-      if (valid) {
-        setIsLocked(false);
-        return true;
-      }
-    } catch {
-      // ignore
-    }
+      if (valid) { setIsLocked(false); return true; }
+    } catch { /* ignore */ }
     return false;
   }, []);
 
@@ -288,15 +296,22 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     let mounted = true;
     (async () => {
       try {
-        const [bioAvail, bioEnabled, pinExists, stored, customToks] = await Promise.all([
+        const [bioAvail, bioEnabled, pinExists, stored, customToks, savedTestnet] = await Promise.all([
           isBiometricAvailable().catch(() => false),
           isBiometricEnabled().catch(() => false),
           hasPIN().catch(() => false),
           loadWallet().catch(() => null),
           loadCustomTokens().catch(() => []),
+          AsyncStorage.getItem(STORAGE_KEYS.IS_TESTNET).catch(() => null),
         ]);
 
         if (!mounted) return;
+
+        if (savedTestnet !== null) {
+          const testnetVal = savedTestnet === '1';
+          setIsTestnet(testnetVal);
+          isTestnetRef.current = testnetVal;
+        }
 
         setBiometricAvailableState(bioAvail);
         setBiometricEnabledState(bioEnabled);
@@ -309,7 +324,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           setHasWallet(true);
           setMnemonic(stored.mnemonic);
           setAddresses(stored.addresses);
-          // Lock if PIN exists OR biometrics is enabled
           if (pinExists || (bioEnabled && bioAvail)) {
             setIsLocked(true);
           }
@@ -323,15 +337,15 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     return () => { mounted = false; };
   }, []);
 
-  // ─── Auto-refresh balances when wallet is ready and unlocked ─────────────
+  // ─── Auto-refresh balances when wallet is ready/unlocked or network mode changes
 
   useEffect(() => {
     if (hasWallet && !isLocked && addressesRef.current) {
       refreshBalances();
     }
-  }, [hasWallet, isLocked, refreshBalances]);
+  }, [hasWallet, isLocked, isTestnet, refreshBalances]);
 
-  // ─── Auto-refresh tokens when network changes ─────────────────────────────
+  // ─── Auto-refresh tokens when network or mode changes ─────────────────────
 
   useEffect(() => {
     if (hasWallet && !isLocked && addressesRef.current) {
@@ -339,7 +353,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     } else {
       setTokenBalances([]);
     }
-  }, [selectedNetwork, hasWallet, isLocked, refreshTokenBalances]);
+  }, [selectedNetwork, hasWallet, isLocked, isTestnet, refreshTokenBalances]);
 
   const totalUSD = Object.values(balances)
     .reduce((sum, b) => sum + parseFloat(b?.usdValue || '0'), 0)
@@ -351,6 +365,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       selectedNetwork, balances, tokenBalances, customTokens, totalUSD,
       isLoadingBalances, isLoadingTokens,
       biometricEnabled, biometricAvailable, pinEnabled,
+      isTestnet, toggleNetworkMode,
       createWallet, importWallet, confirmWalletCreation, removeWallet, setupPIN,
       setSelectedNetwork, refreshBalances, refreshTokenBalances, refreshCustomTokens,
       getCurrentAddress, sendTransaction,

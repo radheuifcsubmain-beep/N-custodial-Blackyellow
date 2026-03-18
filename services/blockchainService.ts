@@ -1,7 +1,6 @@
 // Powered by OnSpace.AI
-import { NETWORKS, NetworkId } from '../constants/config';
+import { NETWORKS, MAINNET_NETWORKS, TESTNET_NETWORKS, NetworkId, getNetworks } from '../constants/config';
 
-// Note: Use TokenBalance from tokenService.ts for ERC-20 tokens
 export interface NativeBalance {
   symbol: string;
   name: string;
@@ -30,7 +29,9 @@ export interface GasEstimate {
   unit: string;
 }
 
-// ─── Native balance ───────────────────────────────────────────────────────────
+type NetworkConfig = typeof MAINNET_NETWORKS | typeof TESTNET_NETWORKS;
+
+// ─── RPC helpers ──────────────────────────────────────────────────────────────
 
 async function ethGetBalance(address: string, rpcUrl: string): Promise<string> {
   try {
@@ -103,39 +104,19 @@ async function fetchPrices(coinIds: string[]): Promise<Record<string, number>> {
   }
 }
 
-// ─── Public balance APIs ──────────────────────────────────────────────────────
+// ─── Dynamic balance fetch (used by WalletContext with isTestnet toggle) ───────
 
-export async function fetchNetworkBalance(
-  networkId: NetworkId,
-  address: string
-): Promise<{ balance: string; usdValue: string }> {
-  const network = NETWORKS[networkId];
-  let balance = '0.000000';
-
-  if (networkId === 'solana') {
-    balance = await solGetBalance(address, network.rpcUrl);
-  } else {
-    balance = await ethGetBalance(address, network.rpcUrl);
-  }
-
-  const prices = await fetchPrices([network.coinGeckoId]);
-  const price = prices[network.coinGeckoId] || 0;
-  const usdValue = (parseFloat(balance) * price).toFixed(2);
-
-  return { balance, usdValue };
-}
-
-export async function fetchAllBalances(
-  addresses: Record<NetworkId, string>
+export async function fetchAllBalancesForNetworks(
+  addresses: Record<NetworkId, string>,
+  networks: NetworkConfig
 ): Promise<Record<NetworkId, { balance: string; usdValue: string }>> {
-  const coinIds = Object.values(NETWORKS).map(n => n.coinGeckoId);
+  const coinIds = (Object.values(networks) as any[]).map((n: any) => n.coinGeckoId);
   const prices = await fetchPrices(coinIds);
-
   const results: Partial<Record<NetworkId, { balance: string; usdValue: string }>> = {};
 
   await Promise.all(
-    (Object.keys(NETWORKS) as NetworkId[]).map(async (networkId) => {
-      const network = NETWORKS[networkId];
+    (Object.keys(networks) as NetworkId[]).map(async (networkId) => {
+      const network = (networks as any)[networkId];
       const address = addresses[networkId];
       let balance = '0.000000';
 
@@ -154,41 +135,68 @@ export async function fetchAllBalances(
   return results as Record<NetworkId, { balance: string; usdValue: string }>;
 }
 
+// ─── Legacy static-NETWORKS version (kept for backward compat) ───────────────
+
+export async function fetchNetworkBalance(
+  networkId: NetworkId,
+  address: string
+): Promise<{ balance: string; usdValue: string }> {
+  const network = NETWORKS[networkId];
+  let balance = '0.000000';
+  if (networkId === 'solana') {
+    balance = await solGetBalance(address, network.rpcUrl);
+  } else {
+    balance = await ethGetBalance(address, network.rpcUrl);
+  }
+  const prices = await fetchPrices([network.coinGeckoId]);
+  const price = prices[network.coinGeckoId] || 0;
+  const usdValue = (parseFloat(balance) * price).toFixed(2);
+  return { balance, usdValue };
+}
+
+export async function fetchAllBalances(
+  addresses: Record<NetworkId, string>
+): Promise<Record<NetworkId, { balance: string; usdValue: string }>> {
+  return fetchAllBalancesForNetworks(addresses, NETWORKS);
+}
+
 // ─── Gas estimation ───────────────────────────────────────────────────────────
 
-export async function estimateGas(networkId: NetworkId): Promise<GasEstimate> {
+export async function estimateGasForNetwork(
+  networkId: NetworkId,
+  rpcUrl: string,
+  symbol: string
+): Promise<GasEstimate> {
   if (networkId === 'solana') {
     return { low: '0.000005', medium: '0.000005', high: '0.000010', unit: 'SOL' };
   }
-
-  const network = NETWORKS[networkId];
   try {
-    const response = await fetch(network.rpcUrl, {
+    const response = await fetch(rpcUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'eth_gasPrice',
-        params: [],
-        id: 1,
-      }),
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_gasPrice', params: [], id: 1 }),
     });
     const data = await response.json();
     if (data.result) {
       const gasPriceWei = parseInt(data.result, 16);
       const gasLimit = 21000;
-      const low = ((gasPriceWei * gasLimit * 0.8) / 1e18).toFixed(6);
-      const medium = ((gasPriceWei * gasLimit * 1.2) / 1e18).toFixed(6);
-      const high = ((gasPriceWei * gasLimit * 1.5) / 1e18).toFixed(6);
-      return { low, medium, high, unit: network.symbol };
+      return {
+        low: ((gasPriceWei * gasLimit * 0.8) / 1e18).toFixed(6),
+        medium: ((gasPriceWei * gasLimit * 1.2) / 1e18).toFixed(6),
+        high: ((gasPriceWei * gasLimit * 1.5) / 1e18).toFixed(6),
+        unit: symbol,
+      };
     }
-  } catch {
-    // fallback
-  }
-  return { low: '0.000420', medium: '0.000504', high: '0.000630', unit: network.symbol };
+  } catch { /* fallback */ }
+  return { low: '0.000420', medium: '0.000504', high: '0.000630', unit: symbol };
 }
 
-// ─── Mock transaction history (legacy — use transactionService for real txs) ──
+export async function estimateGas(networkId: NetworkId): Promise<GasEstimate> {
+  const network = NETWORKS[networkId];
+  return estimateGasForNetwork(networkId, network.rpcUrl, network.symbol);
+}
+
+// ─── Mock transactions (legacy) ───────────────────────────────────────────────
 
 export function getMockTransactions(
   address: string,

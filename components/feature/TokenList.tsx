@@ -2,25 +2,54 @@
 // ERC-20 / BEP-20 token list — standard + custom (Pinata-imported) tokens
 import React, { memo, useEffect, useState } from 'react';
 import {
-  View, Text, StyleSheet, Pressable, ActivityIndicator,
+  View, Text, StyleSheet, Pressable, ActivityIndicator, Image,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Colors, Spacing, Radii } from '../../constants/theme';
 import { useWallet } from '../../hooks/useWallet';
 import { TokenBalance } from '../../services/tokenService';
 import { CustomToken, fetchCustomTokenBalance } from '../../services/customTokenService';
-import { NETWORKS } from '../../constants/config';
+import { resolveIpfsUrl } from '../../services/pinataService';
+import { getNetworks } from '../../constants/config';
+
+// ── Token logo helper ─────────────────────────────────────────────────────────
+
+const TokenLogo = memo(({ logoUrl, symbol, color }: {
+  logoUrl?: string;
+  symbol: string;
+  color: string;
+}) => {
+  const [imgFailed, setImgFailed] = useState(false);
+  const resolved = resolveIpfsUrl(logoUrl);
+
+  if (resolved && !imgFailed) {
+    return (
+      <Image
+        source={{ uri: resolved }}
+        style={[styles.logoImg, { borderColor: color + '44' }]}
+        onError={() => setImgFailed(true)}
+      />
+    );
+  }
+
+  return (
+    <View style={[styles.iconBg, { backgroundColor: color + '22' }]}>
+      <Text style={[styles.iconText, { color }]}>{symbol[0]}</Text>
+    </View>
+  );
+});
 
 // ── Standard token row ────────────────────────────────────────────────────────
+
 const TokenRow = memo(({ item }: { item: TokenBalance }) => {
   const hasBalance = parseFloat(item.balance) > 0;
   return (
     <View style={styles.row}>
-      <View style={[styles.iconBg, { backgroundColor: item.token.color + '22' }]}>
-        <Text style={[styles.iconText, { color: item.token.color }]}>
-          {item.token.symbol[0]}
-        </Text>
-      </View>
+      <TokenLogo
+        logoUrl={item.token.logoUrl}
+        symbol={item.token.symbol}
+        color={item.token.color}
+      />
       <View style={styles.info}>
         <Text style={styles.symbol}>{item.token.symbol}</Text>
         <Text style={styles.name}>{item.token.name}</Text>
@@ -38,6 +67,7 @@ const TokenRow = memo(({ item }: { item: TokenBalance }) => {
 });
 
 // ── Custom token row ──────────────────────────────────────────────────────────
+
 const CustomTokenRow = memo(({ token, walletAddress, rpcUrl }: {
   token: CustomToken;
   walletAddress: string;
@@ -61,9 +91,11 @@ const CustomTokenRow = memo(({ token, walletAddress, rpcUrl }: {
 
   return (
     <View style={styles.row}>
-      <View style={[styles.iconBg, { backgroundColor: token.color + '22' }]}>
-        <Text style={[styles.iconText, { color: token.color }]}>{token.symbol[0]}</Text>
-      </View>
+      <TokenLogo
+        logoUrl={token.logoUrl}
+        symbol={token.symbol}
+        color={token.color}
+      />
       <View style={styles.info}>
         <View style={styles.symbolRow}>
           <Text style={styles.symbol}>{token.symbol}</Text>
@@ -89,15 +121,17 @@ const CustomTokenRow = memo(({ token, walletAddress, rpcUrl }: {
 });
 
 // ── Main TokenList ────────────────────────────────────────────────────────────
+
 export const TokenList = memo(() => {
   const {
     tokenBalances, isLoadingTokens, selectedNetwork,
-    refreshTokenBalances, customTokens, addresses,
+    refreshTokenBalances, customTokens, addresses, isTestnet,
   } = useWallet();
 
   const networkCustomTokens = customTokens.filter(t => t.network === selectedNetwork);
   const walletAddress = addresses?.[selectedNetwork] ?? '';
-  const rpcUrl = NETWORKS[selectedNetwork]?.rpcUrl ?? '';
+  const activeNetworks = getNetworks(isTestnet);
+  const rpcUrl = (activeNetworks as any)[selectedNetwork]?.rpcUrl ?? '';
 
   if (selectedNetwork === 'solana') {
     return (
@@ -147,7 +181,6 @@ export const TokenList = memo(() => {
 
   return (
     <View style={styles.container}>
-      {/* Standard tokens */}
       {tokenBalances.length > 0 && (
         <View>
           <View style={styles.header}>
@@ -167,7 +200,6 @@ export const TokenList = memo(() => {
         </View>
       )}
 
-      {/* Custom (Pinata-imported) tokens */}
       {networkCustomTokens.length > 0 && (
         <View>
           <View style={styles.header}>
@@ -198,6 +230,10 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row', alignItems: 'center',
     paddingVertical: 12, paddingHorizontal: Spacing.md, gap: Spacing.md,
+  },
+  logoImg: {
+    width: 38, height: 38, borderRadius: Radii.full,
+    borderWidth: 1, backgroundColor: Colors.surfaceElevated,
   },
   iconBg: { width: 38, height: 38, borderRadius: Radii.full, alignItems: 'center', justifyContent: 'center' },
   iconText: { fontSize: 16, fontWeight: '700' },

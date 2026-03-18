@@ -12,6 +12,7 @@ export interface TokenDef {
   coinGeckoId: string;
   addresses: Partial<Record<Exclude<NetworkId, 'solana'>, string>>;
   color: string;
+  logoUrl?: string;
 }
 
 export const EVM_TOKENS: TokenDef[] = [

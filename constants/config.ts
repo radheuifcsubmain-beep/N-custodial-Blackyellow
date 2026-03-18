@@ -1,9 +1,9 @@
 // Powered by OnSpace.AI
 // ─── Network Configuration ────────────────────────────────────────────────────
-// Set USE_TESTNETS=true for testnet mode (default), false for mainnet
-export const USE_TESTNETS = true;
+export const DEFAULT_USE_TESTNETS = true;
 
 const INFURA_KEY = process.env.EXPO_PUBLIC_INFURA_KEY ?? '';
+export const ALCHEMY_KEY = process.env.EXPO_PUBLIC_ALCHEMY_KEY ?? '';
 
 // ─── Mainnet Networks ──────────────────────────────────────────────────────────
 export const MAINNET_NETWORKS = {
@@ -12,7 +12,9 @@ export const MAINNET_NETWORKS = {
     name: 'Ethereum',
     symbol: 'ETH',
     chainId: 1,
-    rpcUrl: `https://mainnet.infura.io/v3/${INFURA_KEY}`,
+    rpcUrl: ALCHEMY_KEY
+      ? `https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`
+      : `https://mainnet.infura.io/v3/${INFURA_KEY}`,
     explorerUrl: 'https://etherscan.io',
     explorerApiUrl: 'https://api.etherscan.io/api',
     decimals: 18,
@@ -25,7 +27,9 @@ export const MAINNET_NETWORKS = {
     name: 'BNB Smart Chain',
     symbol: 'BNB',
     chainId: 56,
-    rpcUrl: `https://bsc-mainnet.infura.io/v3/${INFURA_KEY}`,
+    rpcUrl: ALCHEMY_KEY
+      ? `https://bnb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`
+      : `https://bsc-mainnet.infura.io/v3/${INFURA_KEY}`,
     explorerUrl: 'https://bscscan.com',
     explorerApiUrl: 'https://api.bscscan.com/api',
     decimals: 18,
@@ -38,7 +42,9 @@ export const MAINNET_NETWORKS = {
     name: 'Polygon',
     symbol: 'POL',
     chainId: 137,
-    rpcUrl: `https://polygon-mainnet.infura.io/v3/${INFURA_KEY}`,
+    rpcUrl: ALCHEMY_KEY
+      ? `https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`
+      : `https://polygon-mainnet.infura.io/v3/${INFURA_KEY}`,
     explorerUrl: 'https://polygonscan.com',
     explorerApiUrl: 'https://api.polygonscan.com/api',
     decimals: 18,
@@ -51,7 +57,9 @@ export const MAINNET_NETWORKS = {
     name: 'Solana',
     symbol: 'SOL',
     chainId: 0,
-    rpcUrl: 'https://api.mainnet-beta.solana.com',
+    rpcUrl: ALCHEMY_KEY
+      ? `https://solana-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`
+      : 'https://api.mainnet-beta.solana.com',
     explorerUrl: 'https://solscan.io',
     explorerApiUrl: '',
     decimals: 9,
@@ -68,8 +76,9 @@ export const TESTNET_NETWORKS = {
     name: 'Ethereum Sepolia',
     symbol: 'ETH',
     chainId: 11155111,
-    // Public free Sepolia RPC (no key needed)
-    rpcUrl: 'https://rpc.sepolia.org',
+    rpcUrl: ALCHEMY_KEY
+      ? `https://eth-sepolia.g.alchemy.com/v2/${ALCHEMY_KEY}`
+      : 'https://rpc.sepolia.org',
     explorerUrl: 'https://sepolia.etherscan.io',
     explorerApiUrl: 'https://api-sepolia.etherscan.io/api',
     decimals: 18,
@@ -82,8 +91,9 @@ export const TESTNET_NETWORKS = {
     name: 'BSC Testnet',
     symbol: 'BNB',
     chainId: 97,
-    // Public BSC testnet RPC
-    rpcUrl: 'https://data-seed-prebsc-1-s1.bnbchain.org:8545',
+    rpcUrl: ALCHEMY_KEY
+      ? `https://bnb-testnet.g.alchemy.com/v2/${ALCHEMY_KEY}`
+      : 'https://data-seed-prebsc-1-s1.bnbchain.org:8545',
     explorerUrl: 'https://testnet.bscscan.com',
     explorerApiUrl: 'https://api-testnet.bscscan.com/api',
     decimals: 18,
@@ -96,7 +106,9 @@ export const TESTNET_NETWORKS = {
     name: 'Polygon Amoy',
     symbol: 'POL',
     chainId: 80002,
-    rpcUrl: 'https://rpc-amoy.polygon.technology',
+    rpcUrl: ALCHEMY_KEY
+      ? `https://polygon-amoy.g.alchemy.com/v2/${ALCHEMY_KEY}`
+      : 'https://rpc-amoy.polygon.technology',
     explorerUrl: 'https://amoy.polygonscan.com',
     explorerApiUrl: 'https://api-amoy.polygonscan.com/api',
     decimals: 18,
@@ -109,7 +121,9 @@ export const TESTNET_NETWORKS = {
     name: 'Solana Devnet',
     symbol: 'SOL',
     chainId: 0,
-    rpcUrl: 'https://api.devnet.solana.com',
+    rpcUrl: ALCHEMY_KEY
+      ? `https://solana-devnet.g.alchemy.com/v2/${ALCHEMY_KEY}`
+      : 'https://api.devnet.solana.com',
     explorerUrl: 'https://solscan.io/?cluster=devnet',
     explorerApiUrl: '',
     decimals: 9,
@@ -119,8 +133,12 @@ export const TESTNET_NETWORKS = {
   },
 } as const;
 
-// Active networks based on USE_TESTNETS flag
-export const NETWORKS = USE_TESTNETS ? TESTNET_NETWORKS : MAINNET_NETWORKS;
+export function getNetworks(isTestnet: boolean) {
+  return isTestnet ? TESTNET_NETWORKS : MAINNET_NETWORKS;
+}
+
+// Default active networks (used by services that can't access context)
+export const NETWORKS = DEFAULT_USE_TESTNETS ? TESTNET_NETWORKS : MAINNET_NETWORKS;
 
 export type NetworkId = keyof typeof MAINNET_NETWORKS;
 
@@ -136,11 +154,14 @@ export const STORAGE_KEYS = {
   WALLET_ADDRESS: 'nw_wallet_addresses',
   SELECTED_NETWORK: 'nw_selected_network',
   HAS_WALLET: 'nw_has_wallet',
+  IS_TESTNET: 'nw_is_testnet',
 };
 
-// Explorer API keys (optional — higher rate limits)
 export const EXPLORER_API_KEYS = {
   etherscan: process.env.EXPO_PUBLIC_ETHERSCAN_API_KEY ?? '',
   bscscan: process.env.EXPO_PUBLIC_BSCSCAN_API_KEY ?? '',
   polygonscan: process.env.EXPO_PUBLIC_POLYGONSCAN_API_KEY ?? '',
 };
+
+// Legacy flag for components that haven't migrated to dynamic toggle
+export const USE_TESTNETS = DEFAULT_USE_TESTNETS;

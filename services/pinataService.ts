@@ -1,13 +1,17 @@
 // XU Wallet — Pinata IPFS service (env-key first, AsyncStorage fallback)
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// Keys from environment (Replit Secrets) — set automatically
 const ENV_PINATA_API_KEY = process.env.EXPO_PUBLIC_PINATA_API_KEY ?? '';
 const ENV_PINATA_SECRET = process.env.EXPO_PUBLIC_PINATA_SECRET ?? '';
 
-// Fallback storage keys (for manually entered credentials in Settings)
 const PINATA_API_KEY_STORAGE = 'xu_pinata_api_key';
 const PINATA_SECRET_STORAGE = 'xu_pinata_secret';
+
+const IPFS_GATEWAYS = [
+  'https://gateway.pinata.cloud/ipfs/',
+  'https://cloudflare-ipfs.com/ipfs/',
+  'https://ipfs.io/ipfs/',
+];
 
 export interface TokenMetadata {
   name: string;
@@ -25,15 +29,28 @@ export interface TokenMetadata {
   createdAt?: string;
 }
 
+// ── Resolve ipfs:// or bare CID to an HTTP URL ─────────────────────────────────
+
+export function resolveIpfsUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  if (url.startsWith('ipfs://')) {
+    const cid = url.replace('ipfs://', '');
+    return `${IPFS_GATEWAYS[0]}${cid}`;
+  }
+  // Bare CID
+  if (url.length > 20 && !url.includes('/')) {
+    return `${IPFS_GATEWAYS[0]}${url}`;
+  }
+  return url;
+}
+
 // ── Credential resolution ──────────────────────────────────────────────────────
-// Priority: env vars (Replit Secrets) → AsyncStorage (manually entered)
 
 export async function getPinataCredentials(): Promise<{ apiKey: string; secretKey: string } | null> {
-  // Use env keys if available — no user action needed
   if (ENV_PINATA_API_KEY && ENV_PINATA_SECRET) {
     return { apiKey: ENV_PINATA_API_KEY, secretKey: ENV_PINATA_SECRET };
   }
-  // Fallback to manually stored credentials
   const apiKey = await AsyncStorage.getItem(PINATA_API_KEY_STORAGE);
   const secretKey = await AsyncStorage.getItem(PINATA_SECRET_STORAGE);
   if (!apiKey || !secretKey) return null;
@@ -55,17 +72,10 @@ export function isPinataConfiguredViaEnv(): boolean {
   return !!(ENV_PINATA_API_KEY && ENV_PINATA_SECRET);
 }
 
-// ── Fetch by CID or URL ────────────────────────────────────────────────────────
+// ── Fetch metadata JSON from a CID or URL ─────────────────────────────────────
 
 export async function fetchTokenMetadataFromPinata(cidOrUrl: string): Promise<TokenMetadata> {
-  let url: string;
-  if (cidOrUrl.startsWith('http')) {
-    url = cidOrUrl;
-  } else if (cidOrUrl.startsWith('ipfs://')) {
-    url = `https://gateway.pinata.cloud/ipfs/${cidOrUrl.replace('ipfs://', '')}`;
-  } else {
-    url = `https://gateway.pinata.cloud/ipfs/${cidOrUrl}`;
-  }
+  const url = resolveIpfsUrl(cidOrUrl) ?? cidOrUrl;
 
   const creds = await getPinataCredentials();
   const headers: Record<string, string> = { Accept: 'application/json' };
@@ -75,13 +85,11 @@ export async function fetchTokenMetadataFromPinata(cidOrUrl: string): Promise<To
   }
 
   const response = await fetch(url, { headers });
-
   if (!response.ok) {
     throw new Error(`Failed to fetch from Pinata: ${response.status} ${response.statusText}`);
   }
 
   const data = await response.json();
-
   if (!data.symbol || !data.name || !data.contractAddress) {
     throw new Error('Invalid token metadata: missing required fields (name, symbol, contractAddress)');
   }
@@ -96,7 +104,7 @@ export async function fetchTokenMetadataFromPinata(cidOrUrl: string): Promise<To
     chainId: data.chainId ? Number(data.chainId) : undefined,
     description: data.description ? String(data.description) : undefined,
     color: data.color ?? '#E8B800',
-    logoUrl: data.logoUrl ?? data.image ?? undefined,
+    logoUrl: resolveIpfsUrl(data.logoUrl ?? data.logo ?? data.image),
     creatorWallet: data.creatorWallet ?? data.owner ?? undefined,
     website: data.website ?? undefined,
     createdAt: data.createdAt ?? new Date().toISOString(),
